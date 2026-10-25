@@ -548,6 +548,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 把导出的切片清单直接写进本地视频目录（source/<视频>/clips.csv），
+  // 绕过浏览器的下载文件夹 —— 这是浏览器下载做不到的事。
+  if (message.action === "saveClipList") {
+    const videoId =
+      typeof message.videoId === "string" ? message.videoId.trim() : "";
+    const content =
+      typeof message.content === "string" ? message.content : "";
+    if (!videoId || !content.trim()) {
+      sendResponse({ success: false, error: "Missing videoId or content." });
+      return false;
+    }
+    try {
+      chrome.runtime.sendNativeMessage(
+        YTD_NATIVE_HOST,
+        { action: "saveClipList", videoId, content },
+        (response) => {
+          const lastError = chrome.runtime.lastError;
+          if (lastError) {
+            sendResponse({
+              success: false,
+              error: lastError.message,
+              notInstalled: true,
+            });
+            return;
+          }
+          sendResponse({
+            success: !!(response && response.ok),
+            path: response?.path,
+            error: response?.error,
+          });
+        },
+      );
+    } catch (error) {
+      sendResponse({ success: false, error: error.message, notInstalled: true });
+    }
+    return true;
+  }
+
   if (message.action === "openSidePanel") {
     const tabId = sender.tab?.id;
     debugLog("[YouTube Digest BG] openSidePanel requested from tab:", tabId);

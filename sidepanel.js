@@ -2213,7 +2213,7 @@ async function loadNotes(videoId) {
  * clip.sh expects. Each note becomes one clip: it starts at the note's
  * timestamp and ends where the next note starts (capped so clips stay short).
  */
-function exportClipsCsv() {
+async function exportClipsCsv() {
   const btn = document.getElementById("exportClipsBtn");
   const flash = (text) => {
     if (!btn) return;
@@ -2263,12 +2263,35 @@ function exportClipsCsv() {
     rows.push([start, end, csvCell(title), "", csvCell(text)].join(","));
   });
 
-  downloadTextFile(
-    rows.join("\n"),
-    `clips-${videoId}.csv`,
-    "text/csv;charset=utf-8",
-  );
+  const csv = rows.join("\n");
+
+  // 首选：通过 native host 直接写进 source/<视频>/clips.csv，不经下载文件夹
+  if (await saveClipListNatively(videoId, csv)) {
+    flash(`Saved ${notes.length}`);
+    return;
+  }
+
+  // 兜底：浏览器下载（没装 native host，或视频还没下载到本地）
+  downloadTextFile(csv, `clips-${videoId}.csv`, "text/csv;charset=utf-8");
   flash(`Exported ${notes.length}`);
+}
+
+/**
+ * Tries to write the clip list straight into the video's local folder via the
+ * native host. Returns true if that worked; falls back to a browser download
+ * when the host is missing or the video hasn't been downloaded yet.
+ */
+async function saveClipListNatively(videoId, csv) {
+  try {
+    const res = await chrome.runtime.sendMessage({
+      action: "saveClipList",
+      videoId,
+      content: csv,
+    });
+    return !!res?.success;
+  } catch (_error) {
+    return false;
+  }
 }
 
 // ============================================================
