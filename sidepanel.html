@@ -20,6 +20,15 @@
         <div class="header-actions">
           <button
             class="settings-btn"
+            id="downloadVideoBtn"
+            type="button"
+            title="Download this video to your computer (needs install-native-host.sh)"
+            style="display: none"
+          >
+            Download
+          </button>
+          <button
+            class="settings-btn"
             id="settingsBtn"
             type="button"
             title="Open YouTube Digest settings"
@@ -240,6 +249,13 @@
                   aria-pressed="false"
                 >
                   All Notes
+                </button>
+                <button
+                  class="enhance-btn"
+                  id="exportClipsBtn"
+                  title="Export these notes as a clip list (CSV) for clip.sh"
+                >
+                  Export clips
                 </button>
               </div>
             </div>

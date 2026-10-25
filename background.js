@@ -16,6 +16,8 @@
 importScripts("settings.js");
 
 const DEBUG = false;
+// 本地下载用的 Native Messaging host 名字，跟 install-native-host.sh 里的一致
+const YTD_NATIVE_HOST = "ytd_toolkit";
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
 const AI_PROVIDER_HARD_TIMEOUT_MS = 120_000;
 const AI_PROVIDER_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -488,6 +490,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.runtime.openOptionsPage();
     sendResponse({ success: true });
     return false;
+  }
+
+  // 调用本地的 download.sh（通过 Native Messaging）。
+  // 只有装了 install-native-host.sh 且重启过浏览器才可用。
+  if (message.action === "downloadVideo") {
+    const url = typeof message.url === "string" ? message.url.trim() : "";
+    if (!/^https?:\/\//i.test(url)) {
+      sendResponse({ success: false, error: "Missing or invalid video URL." });
+      return false;
+    }
+    try {
+      chrome.runtime.sendNativeMessage(
+        YTD_NATIVE_HOST,
+        { action: "download", url },
+        (response) => {
+          const lastError = chrome.runtime.lastError;
+          if (lastError) {
+            sendResponse({
+              success: false,
+              error: lastError.message,
+              notInstalled: true,
+            });
+            return;
+          }
+          sendResponse({
+            success: !!(response && response.ok),
+            exitCode: response?.exitCode,
+            output: response?.output || "",
+            error: response?.error,
+          });
+        },
+      );
+    } catch (error) {
+      sendResponse({ success: false, error: error.message, notInstalled: true });
+    }
+    return true; // 保持消息通道，等 native host 回应
+  }
+
+  // 探测本机有没有装 native host，用来决定要不要显示 Download 按钮
+  if (message.action === "pingNativeHost") {
+    try {
+      chrome.runtime.sendNativeMessage(
+        YTD_NATIVE_HOST,
+        { action: "ping" },
+        (response) => {
+          const lastError = chrome.runtime.lastError;
+          sendResponse({
+            available: !lastError && !!(response && response.ok),
+            error: lastError ? lastError.message : null,
+          });
+        },
+      );
+    } catch (error) {
+      sendResponse({ available: false, error: error.message });
+    }
+    return true;
   }
 
   if (message.action === "openSidePanel") {

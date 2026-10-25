@@ -4,7 +4,13 @@
   "version": "1.2.0",
   "minimum_chrome_version": "116",
   "description": "Turn YouTube videos into learning resources with transcripts, bilingual translation, AI overviews, and notes.",
-  "permissions": ["sidePanel", "storage", "tabs", "scripting"],
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs",
+    "scripting",
+    "nativeMessaging"
+  ],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://api.supadata.ai/*",

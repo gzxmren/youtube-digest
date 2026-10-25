@@ -276,6 +276,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
   await loadPanelBehaviorSetting();
   await evictOldCacheEntries(20);
+  await refreshNativeHostButton();
 
   const configStatus = await chrome.runtime.sendMessage({
     action: "checkConfig",
@@ -441,6 +442,10 @@ function setupEventListeners() {
     chrome.runtime.sendMessage({ action: "openOptions" });
   });
 
+  document
+    .getElementById("downloadVideoBtn")
+    ?.addEventListener("click", downloadVideoLocally);
+
   // Transcript actions
   document
     .getElementById("copyTranscriptBtn")
@@ -448,6 +453,9 @@ function setupEventListeners() {
   document
     .getElementById("exportTranscriptBtn")
     ?.addEventListener("click", exportTranscript);
+  document
+    .getElementById("exportClipsBtn")
+    ?.addEventListener("click", exportClipsCsv);
   document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
     button.addEventListener("click", () => {
       handleDisplayLanguageModeChange(button.dataset.transcriptMode);
@@ -1701,8 +1709,8 @@ async function copyToClipboardWithFeedback(text, buttonId) {
   }
 }
 
-function downloadTextFile(text, filename) {
-  const blob = new Blob([text], { type: "text/plain" });
+function downloadTextFile(text, filename, mimeType = "text/plain") {
+  const blob = new Blob([text], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -2120,6 +2128,133 @@ async function loadNotes(videoId) {
   } catch (error) {
     console.error("[YouTube Digest Panel] Load notes error:", error);
   }
+}
+
+/**
+ * Exports the notes of the current video as a clip list CSV, the format
+ * clip.sh expects. Each note becomes one clip: it starts at the note's
+ * timestamp and ends where the next note starts (capped so clips stay short).
+ */
+function exportClipsCsv() {
+  const btn = document.getElementById("exportClipsBtn");
+  const flash = (text) => {
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => {
+      btn.textContent = original;
+    }, 2000);
+  };
+
+  // In "All Notes" mode currentNotes spans several videos — narrow it down.
+  const videoId = currentNotesFilterVideoId || currentVideoId;
+  if (!videoId) {
+    flash("Open a video first");
+    return;
+  }
+
+  const notes = (currentNotes || [])
+    .filter((note) => note.videoId === videoId)
+    .filter((note) => Number(note.timestampSeconds) > 0)
+    .sort(
+      (a, b) =>
+        (Number(a.timestampSeconds) || 0) - (Number(b.timestampSeconds) || 0),
+    );
+
+  if (notes.length === 0) {
+    flash("No notes yet");
+    return;
+  }
+
+  const MAX_CLIP_SECONDS = 180;
+  const rows = ["start,end,title,reason,summary"];
+
+  notes.forEach((note, index) => {
+    const start = Math.floor(Number(note.timestampSeconds) || 0);
+    const next = notes[index + 1];
+    let end = next
+      ? Math.min(
+          Math.floor(Number(next.timestampSeconds) || 0),
+          start + MAX_CLIP_SECONDS,
+        )
+      : start + 60;
+    if (end <= start) end = start + 20;
+
+    const text = stripHtmlToText(note.text);
+    const title = text.slice(0, 24) || `clip-${start}s`;
+    rows.push([start, end, csvCell(title), "", csvCell(text)].join(","));
+  });
+
+  downloadTextFile(
+    rows.join("\n"),
+    `clips-${videoId}.csv`,
+    "text/csv;charset=utf-8",
+  );
+  flash(`Exported ${notes.length}`);
+}
+
+// ============================================================
+// LOCAL DOWNLOAD (Native Messaging)
+// ============================================================
+
+/**
+ * Shows the Download button only when the local host is actually installed —
+ * otherwise the button would just fail for everyone else.
+ */
+async function refreshNativeHostButton() {
+  const btn = document.getElementById("downloadVideoBtn");
+  if (!btn) return;
+  try {
+    const res = await chrome.runtime.sendMessage({ action: "pingNativeHost" });
+    btn.style.display = res?.available ? "" : "none";
+  } catch (_error) {
+    btn.style.display = "none";
+  }
+}
+
+/** Sends the current video to the local download.sh via the native host. */
+async function downloadVideoLocally() {
+  const btn = document.getElementById("downloadVideoBtn");
+  if (!btn || !currentVideoUrl) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Downloading…";
+
+  try {
+    const res = await chrome.runtime.sendMessage({
+      action: "downloadVideo",
+      url: currentVideoUrl,
+    });
+    if (res?.success) {
+      btn.textContent = "Saved";
+    } else {
+      btn.textContent = res?.notInstalled ? "No host" : "Failed";
+      if (res?.output) {
+        console.error("[YouTube Digest Panel] Download output:", res.output);
+      }
+    }
+  } catch (error) {
+    console.error("[YouTube Digest Panel] Download error:", error);
+    btn.textContent = "Failed";
+  } finally {
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 3000);
+  }
+}
+
+/** Quotes a CSV cell, doubling any quotes inside it. */
+function csvCell(value) {
+  return `"${String(value || "").replace(/"/g, '""')}"`;
+}
+
+/** Notes are stored as HTML; clip titles need plain text. */
+function stripHtmlToText(html) {
+  const holder = document.createElement("div");
+  holder.innerHTML = html || "";
+  return (holder.textContent || "").replace(/\s+/g, " ").trim();
 }
 
 /**
