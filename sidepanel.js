@@ -454,6 +454,9 @@ function setupEventListeners() {
     .getElementById("exportTranscriptBtn")
     ?.addEventListener("click", exportTranscript);
   document
+    .getElementById("exportSrtBtn")
+    ?.addEventListener("click", exportTranscriptSrt);
+  document
     .getElementById("exportClipsBtn")
     ?.addEventListener("click", exportClipsCsv);
   document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
@@ -1720,11 +1723,86 @@ function downloadTextFile(text, filename, mimeType = "text/plain") {
 }
 
 function sanitizeFilename(str) {
-  return (str || "untitled")
-    .replace(/[^\w\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .substring(0, 50)
-    .toLowerCase();
+  // 只去掉文件名真正不允许的字符 —— 旧版用 [^\w\s-] 会把中文标题整个删空
+  return (
+    (str || "untitled")
+      .replace(/[\\/:*?"<>|\r\n\t]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .substring(0, 60) || "untitled"
+  );
+}
+
+/** Seconds -> SRT timestamp, e.g. 92.5 -> "00:01:32,500" */
+function srtTime(totalSeconds) {
+  const ms = Math.max(0, Math.round((Number(totalSeconds) || 0) * 1000));
+  const pad = (value, width = 2) => String(value).padStart(width, "0");
+  return (
+    `${pad(Math.floor(ms / 3600000))}:` +
+    `${pad(Math.floor((ms % 3600000) / 60000))}:` +
+    `${pad(Math.floor((ms % 60000) / 1000))},` +
+    `${pad(ms % 1000, 3)}`
+  );
+}
+
+/** The subtitle line(s) for one segment, honouring the current language mode. */
+function segmentSubtitleText(segment) {
+  const original = stripHtmlToText(segment.text);
+  if (currentTranscriptMode === "original") return original;
+
+  const translated = transcriptParagraphCache.get(
+    transcriptTranslationCacheKey(segment),
+  );
+  const translation = stripHtmlToText(translated);
+  if (currentTranscriptMode === "zh") return translation || original;
+  return translation ? `${original}\n${translation}` : original;
+}
+
+/**
+ * Exports the transcript as a real .srt file. This is how you get subtitles
+ * for videos YouTube has no captions for: the panel's transcript comes from
+ * Supadata, not from YouTube captions, so it exists even when no .srt can be
+ * downloaded. Drop the file next to the video in source/<video>/ and clip.sh
+ * or ffmpeg can use it.
+ */
+function exportTranscriptSrt() {
+  const btn = document.getElementById("exportSrtBtn");
+  const flash = (text) => {
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => {
+      btn.textContent = original;
+    }, 2000);
+  };
+
+  const segments = getActiveTranscriptSegments();
+  if (segments.length === 0) {
+    flash("No transcript");
+    return;
+  }
+
+  const blocks = segments.map((segment, index) => {
+    const start = Number(segment.start) || 0;
+    const next = segments[index + 1];
+    // Segment durations aren't kept, so run until the next one starts.
+    const end = next
+      ? Math.max(Number(next.start) || start + 5, start + 0.5)
+      : start + 5;
+    return [
+      index + 1,
+      `${srtTime(start)} --> ${srtTime(end)}`,
+      segmentSubtitleText(segment),
+      "",
+    ].join("\n");
+  });
+
+  downloadTextFile(
+    blocks.join("\n"),
+    `${sanitizeFilename(currentVideoTitle)} [${currentVideoId}].srt`,
+    "text/plain;charset=utf-8",
+  );
+  flash("Exported");
 }
 
 // ============================================================
