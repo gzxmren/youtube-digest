@@ -76,6 +76,7 @@ function loadBackgroundHelpers({
     aiApiKey: "test-key",
     aiBaseUrl: "https://api.deepseek.com",
     aiModel: "deepseek-v4-flash",
+    keepPanelOpenAcrossTabs: false,
   },
   fetchImpl = fetch,
   setTimeoutImpl = () => 0,
@@ -178,6 +179,23 @@ test("a global panel closes by window when the tab close is rejected", async () 
     ["close", { windowId: 4 }],
     ["setOptions", { tabId: 17, enabled: false }],
   ]);
+});
+
+test("keep-open mode leaves the global panel alone on non-YouTube tabs", async () => {
+  const calls = [];
+  const background = loadBackgroundHelpers({
+    settings: { keepPanelOpenAcrossTabs: true },
+    sidePanel: {
+      setPanelBehavior() {},
+      close: async (options) => calls.push(["close", options]),
+      setOptions: async (options) => calls.push(["setOptions", options]),
+    },
+  });
+
+  await background.updatePanelForTab(17, "https://example.com/page", 4);
+
+  // No close and no per-tab options: the panel keeps following every tab.
+  assert.deepEqual(calls, []);
 });
 
 function createFakeTimers() {

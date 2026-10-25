@@ -28,6 +28,9 @@ let currentVideoDuration = 0;
 let isAnalysisLoading = false; // Track if analysis is in progress
 let youtubeTabId = null; // Store the YouTube tab ID for reliable messaging
 let errorAction = null;
+// When true, one panel stays open and follows the user across tabs instead of
+// closing itself whenever the front tab is not a YouTube video page.
+let keepPanelOpenAcrossTabs = true;
 
 // --- Translation state ---
 // The universal language control supports original content, Chinese, and an
@@ -252,9 +255,26 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 // INITIALIZATION
 // ============================================================
 
+async function loadPanelBehaviorSetting() {
+  try {
+    const stored = await chrome.storage.local.get(YTD_SETTINGS.STORAGE_KEY);
+    const settings = YTD_SETTINGS.normalize(stored[YTD_SETTINGS.STORAGE_KEY]);
+    keepPanelOpenAcrossTabs = settings.keepPanelOpenAcrossTabs !== false;
+  } catch (_error) {
+    keepPanelOpenAcrossTabs = true;
+  }
+}
+
+chrome.storage?.onChanged?.addListener((changes, areaName) => {
+  if (areaName === "local" && changes[YTD_SETTINGS.STORAGE_KEY]) {
+    void loadPanelBehaviorSetting();
+  }
+});
+
 document.addEventListener("DOMContentLoaded", async () => {
   setTranscriptModeButtons("original");
   setupEventListeners();
+  await loadPanelBehaviorSetting();
   await evictOldCacheEntries(20);
 
   const configStatus = await chrome.runtime.sendMessage({
@@ -340,9 +360,16 @@ function panelIsShowingResults() {
  */
 function handleFrontTabUrl(url) {
   if (!(url || "").startsWith("https://www.youtube.com")) {
-    // Start the position save, then close in this same event callback. Chrome
-    // does not reliably honor window.close() after an asynchronous wait.
     void saveCurrentTranscriptViewState();
+    // Closing the panel here is what made it vanish when the user came back
+    // to a YouTube tab: only a fresh click on the icon can reopen it. When
+    // the panel is meant to stay open, show the welcome screen instead.
+    if (keepPanelOpenAcrossTabs) {
+      showState("welcome");
+      return;
+    }
+    // Chrome does not reliably honor window.close() after an asynchronous
+    // wait, so close in this same event callback.
     window.close();
     return;
   }

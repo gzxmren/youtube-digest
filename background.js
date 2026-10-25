@@ -234,6 +234,13 @@ async function readBoundedAiResponse(response, onActivity) {
  * Chrome's Side Panel API lets us show a persistent panel alongside the page.
  */
 chrome.action.onClicked.addListener((tab) => {
+  if (keepPanelOpenAcrossTabs) {
+    // One global panel for the window. It follows the user to every tab and
+    // back again, so returning to a YouTube tab keeps the digest open.
+    chrome.sidePanel.open({ windowId: tab.windowId });
+    return;
+  }
+
   if (!(tab.url || "").startsWith("https://www.youtube.com")) {
     void updatePanelForTab(tab.id, tab.url, tab.windowId);
     return;
@@ -272,6 +279,30 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
  * The original code only handled onUpdated, which is why the panel stayed
  * visible when switching to an already-loaded non-YouTube tab.
  */
+// Cached copy of the "keep the panel open" setting. It is read synchronously
+// in click handlers because chrome.sidePanel.open() only works inside a user
+// gesture, and awaiting storage would spend it.
+let keepPanelOpenAcrossTabs = true;
+
+async function refreshPanelBehaviorSetting() {
+  try {
+    const settings = await getSettings();
+    keepPanelOpenAcrossTabs = settings.keepPanelOpenAcrossTabs !== false;
+  } catch (_error) {
+    keepPanelOpenAcrossTabs = true;
+  }
+}
+
+// Start the first read now. Event handlers that must stay inside a user
+// gesture read the cached value instead of awaiting this.
+let panelBehaviorSettingPromise = refreshPanelBehaviorSetting();
+
+chrome.storage?.onChanged?.addListener((changes, areaName) => {
+  if (areaName === "local" && changes[YTD_SETTINGS.STORAGE_KEY]) {
+    panelBehaviorSettingPromise = refreshPanelBehaviorSetting();
+  }
+});
+
 async function closePanelForTab(tabId, windowId) {
   // Chrome 141 added an explicit close API. On older supported versions,
   // disabling the tab-specific panel below remains the compatibility path.
@@ -292,6 +323,14 @@ async function closePanelForTab(tabId, windowId) {
 }
 
 async function updatePanelForTab(tabId, url, windowId) {
+  await panelBehaviorSettingPromise;
+
+  // "Keep the panel open" uses one global panel for the whole window. Scoping
+  // it to a tab, or closing it here, is what made the panel disappear when
+  // the user came back to a YouTube tab: Chrome will not reopen a panel
+  // without a fresh user gesture.
+  if (keepPanelOpenAcrossTabs) return;
+
   const isYouTube = (url || "").startsWith("https://www.youtube.com");
   if (!isYouTube) {
     // Close the visible instance first. Then disable this tab so Chrome cannot
@@ -459,6 +498,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // IMPORTANT: we call setOptions + open synchronously (no await between them)
     // to preserve the user gesture context. Chrome requires sidePanel.open()
     // to be called within a user gesture — awaiting anything first can expire it.
+    if (tabId && keepPanelOpenAcrossTabs) {
+      chrome.sidePanel
+        .open({ windowId: sender.tab?.windowId })
+        .then(() => {
+          setTimeout(() => {
+            chrome.runtime
+              .sendMessage({ action: "startDigestFromButton" })
+              .catch(() => {});
+          }, 300);
+        })
+        .catch((err) => {
+          console.error("[YouTube Digest BG] openSidePanel error:", err);
+        });
+      return;
+    }
+
     if (tabId) {
       chrome.sidePanel.setOptions({
         tabId,

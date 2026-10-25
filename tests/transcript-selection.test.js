@@ -90,7 +90,7 @@ test("Notes opens at its newest item and Transcript keeps its position", () => {
 test("the transcript view restores without resuming automatic scrolling", () => {
   assert.match(
     source,
-    /void saveCurrentTranscriptViewState\(\);\s+window\.close\(\);/,
+    /void saveCurrentTranscriptViewState\(\);[\s\S]*?if \(keepPanelOpenAcrossTabs\)[\s\S]*?window\.close\(\);/,
   );
   assert.match(
     source,

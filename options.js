@@ -26,6 +26,11 @@ const YTD_OPTIONS = (() => {
       deepseekHelpSuffix: ".",
       privacyNote:
         "When you use AI features, DeepSeek receives the video transcript and relevant video context. Review DeepSeek's terms and pricing before saving.",
+      panelBehavior: "Side panel behavior",
+      keepPanelOpenAcrossTabsLabel:
+        "Keep the side panel open when I switch tabs",
+      keepPanelOpenAcrossTabsHelp:
+        "On: one panel stays open and follows you to every tab in this window. Off: the panel closes as soon as you leave a YouTube video page.",
       saveSettings: "Save settings",
       localRemix: "Local remix",
       customizationTitle: "Want to use another AI model?",
@@ -95,6 +100,10 @@ const YTD_OPTIONS = (() => {
       deepseekHelpSuffix: "。",
       privacyNote:
         "使用 AI 功能时，DeepSeek 会收到视频字幕及相关视频上下文。保存前请查看 DeepSeek 的服务条款和价格。",
+      panelBehavior: "侧边栏行为",
+      keepPanelOpenAcrossTabsLabel: "切换标签页时保持侧边栏打开",
+      keepPanelOpenAcrossTabsHelp:
+        "开启：侧边栏保持打开，并在当前窗口的所有标签页中跟随你。关闭：一旦离开 YouTube 视频页面，侧边栏就会关闭。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -350,6 +359,7 @@ const YTD_OPTIONS = (() => {
     const form = doc.getElementById("settingsForm");
     const aiApiKeyInput = doc.getElementById("aiApiKey");
     const supadataApiKeyInput = doc.getElementById("supadataApiKey");
+    const keepPanelOpenInput = doc.getElementById("keepPanelOpenAcrossTabs");
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -422,6 +432,7 @@ const YTD_OPTIONS = (() => {
 
         aiApiKeyInput.value = settings.aiApiKey;
         supadataApiKeyInput.value = settings.supadataApiKey;
+        keepPanelOpenInput.checked = settings.keepPanelOpenAcrossTabs !== false;
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
@@ -447,6 +458,7 @@ const YTD_OPTIONS = (() => {
       const settings = settingsApi.normalize({
         aiApiKey: aiApiKeyInput.value,
         supadataApiKey: supadataApiKeyInput.value,
+        keepPanelOpenAcrossTabs: keepPanelOpenInput.checked,
       });
 
       if (!settings.supadataApiKey) {

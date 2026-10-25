@@ -12,6 +12,7 @@ var YTD_SETTINGS = (() => {
     aiBaseUrl: "https://api.deepseek.com",
     aiModel: "deepseek-v4-flash",
     supadataApiKey: "",
+    keepPanelOpenAcrossTabs: true,
   });
 
   function isLegacyCustom(input) {
@@ -32,6 +33,9 @@ var YTD_SETTINGS = (() => {
         typeof input.supadataApiKey === "string"
           ? input.supadataApiKey.trim()
           : "",
+      // One global panel that follows every tab. Turn it off to close the
+      // panel whenever the front tab is not a YouTube video page.
+      keepPanelOpenAcrossTabs: input.keepPanelOpenAcrossTabs !== false,
     };
   }
 

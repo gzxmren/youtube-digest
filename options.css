@@ -142,6 +142,20 @@ textarea:focus {
   outline: 3px solid rgba(200, 103, 79, 0.14);
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.checkbox-row input[type="checkbox"] {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
 textarea {
   min-height: 190px;
   resize: vertical;
