@@ -203,7 +203,7 @@ test("product UI contains no emoji or emoji-like pictographs", () => {
   assert.doesNotMatch(productUi, /&#(?:9655|9888);/);
 });
 
-test("selection actions use two equal edge-to-edge hover areas", () => {
+test("selection actions use equal edge-to-edge hover areas", () => {
   const css = read("sidepanel.css");
 
   assert.match(
@@ -212,7 +212,7 @@ test("selection actions use two equal edge-to-edge hover areas", () => {
   );
   assert.match(
     css,
-    /\.explain-btn,\s*\.selection-note-btn\s*\{[^}]*flex:\s*1 1 50%;[^}]*border-radius:\s*0;/,
+    /\.explain-btn,\s*\.selection-note-btn,\s*\.selection-copy-quote-btn\s*\{[^}]*flex:\s*1 1 50%;[^}]*border-radius:\s*0;/,
   );
   assert.match(
     css,
