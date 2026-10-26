@@ -1222,8 +1222,106 @@ body {
   color: var(--text-muted);
 }
 
-.explain-modal-overlay {
+/* ---- Quote card modal (#14) ---- */
+.quote-card-overlay {
   position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+  animation: fadeIn 0.15s ease;
+}
+
+.quote-card-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 420px;
+  max-height: 96vh;
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.quote-card-preview {
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.quote-card-preview canvas {
+  width: 100%;
+  max-width: 340px;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.quote-card-templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.quote-card-chip {
+  padding: 5px 10px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text, #333);
+  font-family: var(--font-body, sans-serif);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    color 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.quote-card-chip:hover {
+  border-color: var(--chip-accent, #888);
+}
+
+.quote-card-chip.active {
+  background: var(--chip-accent, #888);
+  border-color: var(--chip-accent, #888);
+  color: #fff;
+}
+
+.quote-card-footer {
+  display: flex;
+  gap: 8px;
+}
+
+.quote-card-footer button {
+  flex: 1;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  font-family: var(--font-body, sans-serif);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.quote-card-download {
+  background: var(--accent, #333);
+  color: #fff;
+}
+
+.quote-card-close {
+  background: var(--surface-raised, #eee);
+  color: var(--text, #333);
+}
+
+.explain-modal-overlay {  position: fixed;
   inset: 0;
   background: rgba(46, 42, 36, 0.55);
   backdrop-filter: blur(3px);

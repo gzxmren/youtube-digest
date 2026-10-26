@@ -971,6 +971,7 @@ function renderAnalysisResults(analysis) {
         <div class="quote-actions">
           <button class="quote-save-note-btn" title="Save this quote as a note">Note</button>
           <button class="quote-copy-btn" title="Copy this quote">Copy</button>
+          <button class="quote-card-btn" title="Render this quote as a card image (PNG)">Card</button>
         </div>
       </div>
     `;
@@ -1003,6 +1004,12 @@ function renderAnalysisResults(analysis) {
     quoteSaveNoteBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       await saveQuoteAsNote(quote, quoteSaveNoteBtn);
+    });
+
+    const quoteCardBtn = div.querySelector(".quote-card-btn");
+    quoteCardBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openQuoteCardModal(quote, index);
     });
 
     quotesList.appendChild(div);
@@ -2081,6 +2088,383 @@ async function copyQuoteBlock(text, seconds, translation) {
   } catch (_error) {
     return false;
   }
+}
+
+// ============================================================
+// QUOTE CARD (#14) —— canvas 本地渲染金句卡片，零 AI 消耗
+// ============================================================
+
+// 九个厂商主题模板。三种布局基底：
+//   quote     深色引言卡（大引号 + 白字，传播样式）
+//   editorial 暖纸编辑部风（衬线 + 米白底，编辑感）
+//   split     双语对照（上原文下译文，强调色分隔条）
+const QUOTE_CARD_TEMPLATES = [
+  {
+    id: "claude",
+    label: "Claude",
+    layout: "editorial",
+    bg: "#F0EEE6",
+    bg2: null,
+    text: "#3D3929",
+    sub: "#87867F",
+    accent: "#D97757",
+    serif: true,
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    layout: "quote",
+    bg: "#0F0F0F",
+    bg2: null,
+    text: "#ECECEC",
+    sub: "#8A8A8A",
+    accent: "#10A37F",
+    serif: false,
+  },
+  {
+    id: "gemini",
+    label: "Gemini",
+    layout: "quote",
+    bg: "#0B1E3F",
+    bg2: "#3A2E6E",
+    text: "#F2F5FF",
+    sub: "#9AA8CE",
+    accent: "#8AB4F8",
+    serif: false,
+  },
+  {
+    id: "grok",
+    label: "Grok",
+    layout: "quote",
+    bg: "#000000",
+    bg2: null,
+    text: "#FFFFFF",
+    sub: "#9CA3AF",
+    accent: "#E5E7EB",
+    serif: false,
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    layout: "quote",
+    bg: "#101426",
+    bg2: null,
+    text: "#E6E9F5",
+    sub: "#8B93B5",
+    accent: "#4D6BFE",
+    serif: false,
+  },
+  {
+    id: "kimi",
+    label: "Kimi",
+    layout: "quote",
+    bg: "#12122A",
+    bg2: null,
+    text: "#EDEDF7",
+    sub: "#9C9CC4",
+    accent: "#6C7BFF",
+    serif: false,
+  },
+  {
+    id: "glm",
+    label: "GLM",
+    layout: "split",
+    bg: "#F5F7FF",
+    bg2: null,
+    text: "#1A1F36",
+    sub: "#6B7394",
+    accent: "#3859FF",
+    serif: false,
+  },
+  {
+    id: "tencent",
+    label: "Tencent",
+    layout: "split",
+    bg: "#F2F6FC",
+    bg2: null,
+    text: "#17233D",
+    sub: "#6B7B99",
+    accent: "#0052D9",
+    serif: false,
+  },
+  {
+    id: "alibaba",
+    label: "Alibaba",
+    layout: "editorial",
+    bg: "#FFF8F1",
+    bg2: null,
+    text: "#2B1D12",
+    sub: "#9C8776",
+    accent: "#FF6A00",
+    serif: true,
+  },
+];
+
+const QUOTE_CARD_STORAGE_KEY = "ytd_quote_card_template";
+const QUOTE_CARD_WIDTH = 1080;
+const QUOTE_CARD_HEIGHT = 1440;
+const QUOTE_CARD_PADDING = 96;
+
+const quoteCardFontStack = (serif) =>
+  serif
+    ? '"Georgia", "Songti SC", "SimSun", serif'
+    : '"-apple-system", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+
+/** 按词断行，超长词按字符再拆（中英混排都能正确折行）。 */
+function wrapCanvasText(ctx, text, maxWidth) {
+  const lines = [];
+  let line = "";
+  const pushLine = () => {
+    if (line) lines.push(line);
+    line = "";
+  };
+  for (const word of String(text).replace(/\s+/g, " ").trim().split(" ")) {
+    let chunk = word;
+    while (ctx.measureText(line ? `${line} ${chunk}` : chunk).width > maxWidth) {
+      if (line && ctx.measureText(`${line} ${chunk}`).width > maxWidth) {
+        // 先看整词能否另起一行
+        if (line) {
+          pushLine();
+          continue;
+        }
+      }
+      // 单词本身超宽：按字符切
+      if (!line && ctx.measureText(chunk).width > maxWidth) {
+        let piece = "";
+        for (const ch of chunk) {
+          if (ctx.measureText(piece + ch).width > maxWidth && piece) {
+            lines.push(piece);
+            piece = ch;
+          } else {
+            piece += ch;
+          }
+        }
+        chunk = piece;
+        if (!chunk) break;
+        continue;
+      }
+      break;
+    }
+    if (!chunk) continue;
+    const candidate = line ? `${line} ${chunk}` : chunk;
+    if (ctx.measureText(candidate).width <= maxWidth) {
+      line = candidate;
+    } else {
+      pushLine();
+      line = chunk;
+    }
+  }
+  pushLine();
+  return lines;
+}
+
+/** 原文很长时自动缩字号，保证塞得下卡片中部区域。 */
+function fitCanvasFontSize(ctx, text, maxWidth, maxHeight, start, min, lineHeight) {
+  let size = start;
+  for (; size >= min; size -= 4) {
+    ctx.font = `${size}px ${quoteCardFontStack(false)}`;
+    const lines = wrapCanvasText(ctx, text, maxWidth);
+    if (lines.length * size * lineHeight <= maxHeight) return { size, lines };
+  }
+  ctx.font = `${min}px ${quoteCardFontStack(false)}`;
+  return { size: min, lines: wrapCanvasText(ctx, text, maxWidth) };
+}
+
+function drawQuoteCard(canvas, template, quote, translation, meta) {
+  canvas.width = QUOTE_CARD_WIDTH;
+  canvas.height = QUOTE_CARD_HEIGHT;
+  const ctx = canvas.getContext("2d");
+  const { layout, bg, bg2, text, sub, accent, serif } = template;
+  const inner = QUOTE_CARD_WIDTH - QUOTE_CARD_PADDING * 2;
+
+  // 背景：纯色或垂直渐变
+  if (bg2) {
+    const grad = ctx.createLinearGradient(0, 0, 0, QUOTE_CARD_HEIGHT);
+    grad.addColorStop(0, bg);
+    grad.addColorStop(1, bg2);
+    ctx.fillStyle = grad;
+  } else {
+    ctx.fillStyle = bg;
+  }
+  ctx.fillRect(0, 0, QUOTE_CARD_WIDTH, QUOTE_CARD_HEIGHT);
+
+  // 顶部：模板名 + 强调色短线
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = accent;
+  ctx.fillRect(QUOTE_CARD_PADDING, QUOTE_CARD_PADDING - 24, 56, 8);
+  ctx.fillStyle = sub;
+  ctx.font = `600 26px ${quoteCardFontStack(false)}`;
+  ctx.fillText(template.label.toUpperCase(), QUOTE_CARD_PADDING, QUOTE_CARD_PADDING + 28);
+
+  const contentTop = QUOTE_CARD_PADDING + 120;
+  const footerTop = QUOTE_CARD_HEIGHT - QUOTE_CARD_PADDING - 96;
+  const contentHeight = footerTop - contentTop;
+  const bodyWidth = inner;
+
+  if (layout === "split") {
+    // ---- 双语对照：上原文 / 强调色分隔条 / 下译文 ----
+    const half = (contentHeight - 24) / 2;
+    const q = fitCanvasFontSize(ctx, quote.quote, bodyWidth, half, 76, 44, 1.4);
+    ctx.fillStyle = text;
+    ctx.font = `${q.size}px ${quoteCardFontStack(serif)}`;
+    let y = contentTop + q.size;
+    for (const line of q.lines) {
+      ctx.fillText(line, QUOTE_CARD_PADDING, y);
+      y += q.size * 1.4;
+    }
+    ctx.fillStyle = accent;
+    ctx.fillRect(QUOTE_CARD_PADDING, contentTop + half + 2, inner, 14);
+    if (translation) {
+      const t = fitCanvasFontSize(
+        ctx,
+        translation,
+        bodyWidth,
+        half,
+        64,
+        38,
+        1.5,
+      );
+      ctx.fillStyle = text;
+      ctx.font = `${t.size}px ${quoteCardFontStack(false)}`;
+      y = contentTop + half + 24 + t.size + 40;
+      const ty = Math.min(y, footerTop - t.lines.length * t.size * 1.5);
+      for (const line of t.lines) {
+        ctx.fillText(line, QUOTE_CARD_PADDING, ty);
+        ty += t.size * 1.5;
+      }
+    }
+  } else {
+    // ---- quote / editorial：大引号 + 原文 + 译文小字 ----
+    const markSize = layout === "editorial" ? 200 : 160;
+    ctx.fillStyle = accent;
+    ctx.font = `700 ${markSize}px ${quoteCardFontStack(true)}`;
+    ctx.fillText("\u201C", QUOTE_CARD_PADDING - 10, contentTop + markSize * 0.55);
+
+    const quoteTop = contentTop + markSize * 0.45;
+    const availHeight = contentHeight - markSize * 0.45 - 140;
+    const q = fitCanvasFontSize(ctx, quote.quote, bodyWidth, availHeight, 84, 44, 1.4);
+    ctx.fillStyle = text;
+    ctx.font = `${q.size}px ${quoteCardFontStack(serif)}`;
+    let y = quoteTop + q.size;
+    for (const line of q.lines) {
+      ctx.fillText(line, QUOTE_CARD_PADDING, y);
+      y += q.size * 1.4;
+    }
+    if (translation) {
+      // 译文锚在底栏上方：小一号、muted 色，和原文之间留呼吸感
+      const t = fitCanvasFontSize(ctx, translation, bodyWidth, 220, 46, 30, 1.6);
+      const lines = t.lines.slice(-Math.floor(220 / (t.size * 1.6)));
+      let ty = footerTop - 60 - (lines.length - 1) * t.size * 1.6;
+      ctx.fillStyle = sub;
+      ctx.font = `${t.size}px ${quoteCardFontStack(false)}`;
+      for (const line of lines) {
+        ctx.fillText(line, QUOTE_CARD_PADDING, ty);
+        ty += t.size * 1.6;
+      }
+    }
+  }
+
+  // ---- 底栏：细线 + 出处 + 时间戳 ----
+  ctx.fillStyle = sub;
+  ctx.globalAlpha = 0.5;
+  ctx.fillRect(QUOTE_CARD_PADDING, footerTop - 44, inner, 2);
+  ctx.globalAlpha = 1;
+  ctx.font = `500 30px ${quoteCardFontStack(false)}`;
+  const titleLine = meta.title.length > 46 ? `${meta.title.slice(0, 45)}…` : meta.title;
+  ctx.fillText(titleLine, QUOTE_CARD_PADDING, footerTop + 12);
+  ctx.fillStyle = accent;
+  ctx.font = `600 28px ${quoteCardFontStack(false)}`;
+  const byline = [meta.timestamp, meta.channel].filter(Boolean).join(" · ");
+  ctx.fillText(byline, QUOTE_CARD_PADDING, footerTop + 64);
+}
+
+function quoteCardTemplate() {
+  const id = localStorage.getItem(QUOTE_CARD_STORAGE_KEY);
+  return (
+    QUOTE_CARD_TEMPLATES.find((t) => t.id === id) || QUOTE_CARD_TEMPLATES[0]
+  );
+}
+
+/** 打开卡片预览弹窗：canvas 实时预览 + 模板横排切换 + 下载 PNG。 */
+function openQuoteCardModal(quote, index) {
+  document.getElementById("quoteCardModal")?.remove();
+
+  const translation = getInterfaceTranslation(
+    "overview",
+    `quote-${index}`,
+    quote.quote,
+  );
+  const meta = {
+    title: currentVideoTitle || currentVideoId || "YouTube",
+    channel: currentChannelName || "",
+    timestamp: quote.timestamp || noteClock(quote.timestampSeconds),
+  };
+
+  const overlay = document.createElement("div");
+  overlay.id = "quoteCardModal";
+  overlay.className = "quote-card-overlay";
+  overlay.innerHTML = `
+    <div class="quote-card-panel">
+      <div class="quote-card-preview"><canvas aria-label="Quote card preview"></canvas></div>
+      <div class="quote-card-templates" role="listbox" aria-label="Card template"></div>
+      <div class="quote-card-footer">
+        <button class="quote-card-download" type="button">Download PNG</button>
+        <button class="quote-card-close" type="button">Close</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const canvas = overlay.querySelector("canvas");
+  let template = quoteCardTemplate();
+
+  const draw = () => drawQuoteCard(canvas, template, quote, translation, meta);
+
+  const chips = overlay.querySelector(".quote-card-templates");
+  QUOTE_CARD_TEMPLATES.forEach((t) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "quote-card-chip";
+    chip.textContent = t.label;
+    chip.setAttribute("role", "option");
+    chip.style.setProperty("--chip-accent", t.accent);
+    if (t.id === template.id) chip.classList.add("active");
+    chip.addEventListener("click", () => {
+      template = t;
+      localStorage.setItem(QUOTE_CARD_STORAGE_KEY, t.id);
+      chips
+        .querySelectorAll(".quote-card-chip")
+        .forEach((c) => c.classList.remove("active"));
+      chip.classList.add("active");
+      draw();
+    });
+    chips.appendChild(chip);
+  });
+
+  overlay.querySelector(".quote-card-close").addEventListener("click", () => {
+    overlay.remove();
+  });
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  overlay
+    .querySelector(".quote-card-download")
+    .addEventListener("click", () => {
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `quote-${template.id}-${Math.floor(
+          Number(quote.timestampSeconds) || 0,
+        )}s.png`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }, "image/png");
+    });
+
+  draw();
 }
 
 /**
