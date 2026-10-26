@@ -1177,7 +1177,8 @@ body {
 }
 
 .explain-btn,
-.selection-note-btn {
+.selection-note-btn,
+.selection-copy-quote-btn {
   font-family: var(--font-body);
   font-weight: 600;
   font-size: 12px;
@@ -1196,23 +1197,27 @@ body {
 }
 
 .explain-btn:hover:not(:disabled),
-.selection-note-btn:hover:not(:disabled) {
+.selection-note-btn:hover:not(:disabled),
+.selection-copy-quote-btn:hover:not(:disabled) {
   background: var(--surface-raised);
   color: var(--accent-hover);
 }
 
 .explain-btn:focus-visible,
-.selection-note-btn:focus-visible {
+.selection-note-btn:focus-visible,
+.selection-copy-quote-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
-.selection-note-btn {
+.selection-note-btn,
+.selection-copy-quote-btn {
   border-left: 1px solid var(--border);
 }
 
 .explain-btn:disabled,
-.selection-note-btn:disabled {
+.selection-note-btn:disabled,
+.selection-copy-quote-btn:disabled {
   cursor: default;
   color: var(--text-muted);
 }
