@@ -1849,12 +1849,14 @@ function setupExplainFeature() {
   tooltip.innerHTML = `
     <button class="explain-btn" type="button">Explain</button>
     <button class="selection-note-btn" type="button">Note</button>
+    <button class="selection-copy-quote-btn" type="button">Copy quote</button>
   `;
   tooltip.style.display = "none";
   document.body.appendChild(tooltip);
 
   let selectedText = "";
   let selectedTimestamp = 0;
+  let selectedSegmentId = "";
 
   // Interacting with either action must preserve the transcript selection and
   // stay isolated from document and row click behavior.
@@ -1895,6 +1897,7 @@ function setupExplainFeature() {
         const selectedRow = startElement?.closest(".transcript-entry");
         const rowSeconds = Number(selectedRow?.dataset.seconds);
         selectedTimestamp = Number.isFinite(rowSeconds) ? rowSeconds : 0;
+        selectedSegmentId = selectedRow?.dataset.segmentId || "";
 
         // Set the final coordinates while the toolbar is still hidden. If it
         // becomes visible first, Chrome paints it at its default left edge for
@@ -1977,6 +1980,107 @@ function setupExplainFeature() {
         }, 1500);
       }
     });
+
+  // 复制引用块：原文 + 译文（只取缓存里已有的）+ 出处 + 时间戳深链。
+  // 零 AI 调用、零额度 —— 译文不在缓存里就不带，绝不为此触发翻译。
+  tooltip
+    .querySelector(".selection-copy-quote-btn")
+    .addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!selectedText || !currentVideoId) return;
+
+      const button = event.currentTarget;
+      const originalText = button.textContent;
+
+      const translation = collectQuoteTranslation(
+        selectedText,
+        selectedSegmentId,
+      );
+      const ok = await copyQuoteBlock(
+        selectedText,
+        selectedTimestamp,
+        translation,
+      );
+
+      button.textContent = ok ? "Copied" : "Failed";
+      tooltip.style.display = "none";
+      setTimeout(() => {
+        button.textContent = originalText;
+      }, 1500);
+    });
+}
+
+// ============================================================
+// QUOTE COPY (#13)
+// ============================================================
+
+/**
+ * 收集选中文字对应各句的中文译文（仅从转写译文缓存里取）。
+ * 选中跨多句时从起始句往后按句累加，直到覆盖选中长度；
+ * 缓存里没有的句子跳过 —— 未翻译过的内容就不带译文。
+ */
+function collectQuoteTranslation(selectedText, startSegmentId) {
+  if (!startSegmentId) return "";
+  const segments = getActiveTranscriptSegments();
+  const startIdx = segments.findIndex((s) => s.id === startSegmentId);
+  if (startIdx === -1) return "";
+  const selLen = selectedText.replace(/\s+/g, " ").trim().length;
+  const parts = [];
+  let covered = 0;
+  for (let i = startIdx; i < segments.length && covered < selLen + 8; i++) {
+    const t = transcriptParagraphCache.get(
+      transcriptTranslationCacheKey(segments[i]),
+    );
+    if (t) parts.push(t);
+    covered += String(segments[i].text || "").replace(/\s+/g, " ").length;
+  }
+  return parts.join(" ");
+}
+
+/**
+ * 把选中文字组装成「原文 + 译文 + 出处 + 时间戳深链」的引用块，
+ * 以 text/plain + text/html 双格式写入剪贴板：
+ * 粘进 Notion/飞书保留引用样式，粘进纯文本编辑器退化为 Markdown 引用。
+ */
+async function copyQuoteBlock(text, seconds, translation) {
+  const url =
+    currentVideoUrl || `https://www.youtube.com/watch?v=${currentVideoId}`;
+  const link = noteWithTs(url, seconds);
+  const title = currentVideoTitle || currentVideoId;
+  const source = currentChannelName ? `${title} · ${currentChannelName}` : title;
+
+  const plainLines = [`> ${text}`];
+  if (translation) plainLines.push(`> ${translation}`);
+  plainLines.push(">", `> —— [${source}](${link})`);
+  const plain = plainLines.join("\n");
+
+  const htmlParts = [`<p>${escapeHtml(text)}</p>`];
+  if (translation) htmlParts.push(`<p>${escapeHtml(translation)}</p>`);
+  htmlParts.push(
+    `<p>— <a href="${escapeHtml(link)}">${escapeHtml(source)}</a></p>`,
+  );
+  const html = `<blockquote>${htmlParts.join("")}</blockquote>`;
+
+  if (typeof ClipboardItem === "function" && navigator.clipboard?.write) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": new Blob([plain], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        }),
+      ]);
+      return true;
+    } catch (_error) {
+      // 富文本写入失败时退到纯文本
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(plain);
+    return true;
+  } catch (_error) {
+    return false;
+  }
 }
 
 /**
