@@ -7,7 +7,6 @@
   "permissions": [
     "sidePanel",
     "storage",
-    "unlimitedStorage",
     "tabs",
     "scripting",
     "nativeMessaging"
