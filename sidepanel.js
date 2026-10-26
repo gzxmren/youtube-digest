@@ -2324,19 +2324,13 @@ function noteWithTs(url, seconds) {
 }
 
 /**
- * Splits a note's HTML into original / translation plain text.
- * Notes saved in bilingual mode carry .localized-original and
- * .localized-translation spans; plain notes only have the text.
+ * Extracts a note's stored text as plain text. Notes are saved as plain
+ * text (AI-cleaned transcript line or the exact selected words) — the
+ * bilingual spans you see in the notes list are added at render time and
+ * never written back, so there is nothing to split here.
  */
-function noteToParts(html) {
-  const holder = document.createElement("div");
-  holder.innerHTML = html || "";
-  const pick = (el) =>
-    el ? (el.textContent || "").replace(/\s+/g, " ").trim() : "";
-  return {
-    original: pick(holder.querySelector(".localized-original")),
-    translation: pick(holder.querySelector(".localized-translation")),
-  };
+function noteToParts(text) {
+  return { original: stripHtmlToText(text) };
 }
 
 /**
@@ -2424,7 +2418,6 @@ async function exportObsidianMd() {
     lines.push(
       `- [${noteClock(ts)}](${noteWithTs(url, ts)}) ${parts.original || "(empty)"}`,
     );
-    if (parts.translation) lines.push(`  - ${parts.translation}`);
   });
   lines.push("");
 
