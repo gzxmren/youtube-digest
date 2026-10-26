@@ -459,6 +459,9 @@ function setupEventListeners() {
   document
     .getElementById("exportClipsBtn")
     ?.addEventListener("click", exportClipsCsv);
+  document
+    .getElementById("exportObsidianBtn")
+    ?.addEventListener("click", exportObsidianMd);
   document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
     button.addEventListener("click", () => {
       handleDisplayLanguageModeChange(button.dataset.transcriptMode);
@@ -2292,6 +2295,178 @@ async function saveClipListNatively(videoId, csv) {
   } catch (_error) {
     return false;
   }
+}
+
+// ============================================================
+// OBSIDIAN EXPORT
+// ============================================================
+
+/** Seconds -> M:SS / H:MM:SS clock, for display inside the note. */
+function noteClock(total) {
+  const s = Math.max(0, Math.floor(Number(total) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+/** Seconds -> YouTube deep-link t= param, e.g. 83 -> "t=1m23s". */
+function noteTParam(total) {
+  const s = Math.max(0, Math.floor(Number(total) || 0));
+  return `t=${Math.floor(s / 60)}m${s % 60}s`;
+}
+
+/** Appends the timestamp param to a YouTube URL regardless of ?/& state. */
+function noteWithTs(url, seconds) {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}${noteTParam(seconds)}`;
+}
+
+/**
+ * Splits a note's HTML into original / translation plain text.
+ * Notes saved in bilingual mode carry .localized-original and
+ * .localized-translation spans; plain notes only have the text.
+ */
+function noteToParts(html) {
+  const holder = document.createElement("div");
+  holder.innerHTML = html || "";
+  const pick = (el) =>
+    el ? (el.textContent || "").replace(/\s+/g, " ").trim() : "";
+  return {
+    original: pick(holder.querySelector(".localized-original")),
+    translation: pick(holder.querySelector(".localized-translation")),
+  };
+}
+
+/**
+ * Builds one Markdown note per video and writes it into the local Obsidian
+ * vault via the native host (vault path is resolved host-side). Falls back
+ * to a browser download when the host is missing or no "YouTube" vault exists.
+ */
+async function exportObsidianMd() {
+  const btn = document.getElementById("exportObsidianBtn");
+  const flash = (text) => {
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => {
+      btn.textContent = original;
+    }, 2000);
+  };
+
+  // In "All Notes" mode currentNotes spans several videos — narrow it down.
+  const videoId = currentNotesFilterVideoId || currentVideoId;
+  if (!videoId) {
+    flash("Open a video first");
+    return;
+  }
+
+  const notes = (currentNotes || [])
+    .filter((note) => note.videoId === videoId)
+    .sort(
+      (a, b) =>
+        (Number(a.timestampSeconds) || 0) - (Number(b.timestampSeconds) || 0),
+    );
+
+  if (notes.length === 0) {
+    flash("No notes yet");
+    return;
+  }
+
+  const url =
+    currentVideoUrl || `https://www.youtube.com/watch?v=${videoId}`;
+  const title = currentVideoTitle || videoId;
+  const lines = [];
+
+  // --- frontmatter ---
+  lines.push("---");
+  lines.push(`title: ${title}`);
+  lines.push(`channel: ${currentChannelName || ""}`);
+  lines.push(`videoId: ${videoId}`);
+  lines.push(`url: ${url}`);
+  if (currentVideoDuration) lines.push(`duration: ${currentVideoDuration}`);
+  lines.push(`exported: ${new Date().toISOString().slice(0, 10)}`);
+  lines.push("---");
+  lines.push("");
+  lines.push(`# ${title}`);
+  lines.push("");
+
+  // --- Overview chapters + key quotes (only when analysis is cached) ---
+  if (currentAnalysis && Array.isArray(currentAnalysis.chapters)) {
+    lines.push("## Chapters");
+    lines.push("");
+    currentAnalysis.chapters.forEach((ch) => {
+      lines.push(
+        `- **[${ch.timestamp}](${noteWithTs(url, ch.timestampSeconds)}) ${ch.title}** — ${ch.summary || ""}`,
+      );
+    });
+    lines.push("");
+    const quotes = currentAnalysis.keyQuotes || [];
+    if (quotes.length > 0) {
+      lines.push("## Key quotes");
+      lines.push("");
+      quotes.forEach((q) => {
+        lines.push(
+          `> [${q.timestamp}](${noteWithTs(url, q.timestampSeconds)}) ${q.quote}`,
+        );
+        lines.push("");
+      });
+    }
+  }
+
+  // --- manual timestamped notes ---
+  lines.push("## Notes");
+  lines.push("");
+  notes.forEach((note) => {
+    const ts = Math.floor(Number(note.timestampSeconds) || 0);
+    const parts = noteToParts(note.text);
+    lines.push(
+      `- [${noteClock(ts)}](${noteWithTs(url, ts)}) ${parts.original || "(empty)"}`,
+    );
+    if (parts.translation) lines.push(`  - ${parts.translation}`);
+  });
+  lines.push("");
+
+  // --- transcript, so vault-wide search can find every spoken word ---
+  if (currentTranscriptTimestamped) {
+    lines.push("## Transcript");
+    lines.push("");
+    lines.push("```text");
+    lines.push(currentTranscriptTimestamped.trimEnd());
+    lines.push("```");
+  }
+
+  const content = lines.join("\n");
+
+  // 首选：通过 native host 直写 vault，vault 路径由 host 自动解析
+  try {
+    const res = await chrome.runtime.sendMessage({
+      action: "saveObsidianNote",
+      videoId,
+      title,
+      channel: currentChannelName,
+      content,
+    });
+    if (res?.success) {
+      flash("Saved to vault");
+      return;
+    }
+    if (res && !res.notInstalled && res.error) {
+      // vault 缺失等明确报错 —— 打到 console 方便排查，内容仍走兜底不丢
+      console.error("[YouTube Digest Panel] Obsidian export:", res.error);
+    }
+  } catch (_error) {
+    // host 不可用，落到浏览器下载
+  }
+
+  // 兜底：浏览器下载 .md，手动拖进 vault
+  downloadTextFile(
+    content,
+    `${title} [${videoId}].md`,
+    "text/markdown;charset=utf-8",
+  );
+  flash("Exported .md");
 }
 
 // ============================================================

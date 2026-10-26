@@ -586,6 +586,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 把组装好的 Obsidian 笔记写进本地 vault（<vault>/YouTube/<频道名>/...）。
+  // vault 的真实路径由 host 从 Obsidian 配置自动解析，扩展侧不需要知道。
+  if (message.action === "saveObsidianNote") {
+    const videoId =
+      typeof message.videoId === "string" ? message.videoId.trim() : "";
+    const content =
+      typeof message.content === "string" ? message.content : "";
+    if (!videoId || !content.trim()) {
+      sendResponse({ success: false, error: "Missing videoId or content." });
+      return false;
+    }
+    try {
+      chrome.runtime.sendNativeMessage(
+        YTD_NATIVE_HOST,
+        {
+          action: "saveObsidianNote",
+          videoId,
+          title: typeof message.title === "string" ? message.title : "",
+          channel: typeof message.channel === "string" ? message.channel : "",
+          content,
+        },
+        (response) => {
+          const lastError = chrome.runtime.lastError;
+          if (lastError) {
+            sendResponse({
+              success: false,
+              error: lastError.message,
+              notInstalled: true,
+            });
+            return;
+          }
+          sendResponse({
+            success: !!(response && response.ok),
+            path: response?.path,
+            error: response?.error,
+          });
+        },
+      );
+    } catch (error) {
+      sendResponse({ success: false, error: error.message, notInstalled: true });
+    }
+    return true;
+  }
+
   if (message.action === "openSidePanel") {
     const tabId = sender.tab?.id;
     debugLog("[YouTube Digest BG] openSidePanel requested from tab:", tabId);
