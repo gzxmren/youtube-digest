@@ -2258,16 +2258,32 @@ function wrapCanvasText(ctx, text, maxWidth) {
   return lines;
 }
 
-/** 原文很长时自动缩字号，保证塞得下卡片中部区域。 */
-function fitCanvasFontSize(ctx, text, maxWidth, maxHeight, start, min, lineHeight) {
+/** 原文很长时自动缩字号；min 字号仍放不下则截行加省略号，保证不越过边界。 */
+function fitCanvasFontSize(
+  ctx,
+  text,
+  maxWidth,
+  maxHeight,
+  start,
+  min,
+  lineHeight,
+  fontStack,
+) {
+  const family = fontStack || quoteCardFontStack(false);
   let size = start;
   for (; size >= min; size -= 4) {
-    ctx.font = `${size}px ${quoteCardFontStack(false)}`;
+    ctx.font = `${size}px ${family}`;
     const lines = wrapCanvasText(ctx, text, maxWidth);
     if (lines.length * size * lineHeight <= maxHeight) return { size, lines };
   }
-  ctx.font = `${min}px ${quoteCardFontStack(false)}`;
-  return { size: min, lines: wrapCanvasText(ctx, text, maxWidth) };
+  ctx.font = `${min}px ${family}`;
+  const lines = wrapCanvasText(ctx, text, maxWidth);
+  const maxLines = Math.max(1, Math.floor(maxHeight / (min * lineHeight)));
+  if (lines.length > maxLines) {
+    lines.length = maxLines;
+    lines[maxLines - 1] = lines[maxLines - 1].replace(/[\s,.;:，。！？；]*$/, "…");
+  }
+  return { size: min, lines };
 }
 
 function drawQuoteCard(canvas, template, quote, translation, meta) {
@@ -2304,7 +2320,16 @@ function drawQuoteCard(canvas, template, quote, translation, meta) {
   if (layout === "split") {
     // ---- 双语对照：上原文 / 强调色分隔条 / 下译文 ----
     const half = (contentHeight - 24) / 2;
-    const q = fitCanvasFontSize(ctx, quote.quote, bodyWidth, half, 76, 44, 1.4);
+    const q = fitCanvasFontSize(
+      ctx,
+      quote.quote,
+      bodyWidth,
+      half,
+      76,
+      44,
+      1.4,
+      quoteCardFontStack(serif),
+    );
     ctx.fillStyle = text;
     ctx.font = `${q.size}px ${quoteCardFontStack(serif)}`;
     let y = contentTop + q.size;
@@ -2319,18 +2344,18 @@ function drawQuoteCard(canvas, template, quote, translation, meta) {
         ctx,
         translation,
         bodyWidth,
-        half,
+        half - 104,
         64,
         38,
         1.5,
+        quoteCardFontStack(false),
       );
       ctx.fillStyle = text;
       ctx.font = `${t.size}px ${quoteCardFontStack(false)}`;
       y = contentTop + half + 24 + t.size + 40;
-      const ty = Math.min(y, footerTop - t.lines.length * t.size * 1.5);
       for (const line of t.lines) {
-        ctx.fillText(line, QUOTE_CARD_PADDING, ty);
-        ty += t.size * 1.5;
+        ctx.fillText(line, QUOTE_CARD_PADDING, y);
+        y += t.size * 1.5;
       }
     }
   } else {
@@ -2341,25 +2366,50 @@ function drawQuoteCard(canvas, template, quote, translation, meta) {
     ctx.fillText("\u201C", QUOTE_CARD_PADDING - 10, contentTop + markSize * 0.55);
 
     const quoteTop = contentTop + markSize * 0.45;
-    const availHeight = contentHeight - markSize * 0.45 - 140;
-    const q = fitCanvasFontSize(ctx, quote.quote, bodyWidth, availHeight, 84, 44, 1.4);
+    const quoteFont = quoteCardFontStack(serif);
+
+    // 垂直流布局：先给译文定占位（最多 4 行），原文在剩余空间里缩字号，
+    // 译文紧随原文之后 —— 两块内容共用一条向下的流，绝不重叠
+    let tLines = [];
+    let tSize = 0;
+    if (translation) {
+      for (const s of [42, 34]) {
+        ctx.font = `${s}px ${quoteCardFontStack(false)}`;
+        const wrapped = wrapCanvasText(ctx, translation, bodyWidth);
+        tSize = s;
+        tLines = wrapped.slice(0, 4);
+        if (wrapped.length <= 4) break;
+      }
+    }
+
+    // 原文最后一个 baseline 的上限：译文块 + 底栏各留安全距
+    const maxY = tLines.length
+      ? footerTop - 56 - tSize * (1 + 1.6 * (tLines.length - 1)) - 72
+      : footerTop - 72;
+    const q = fitCanvasFontSize(
+      ctx,
+      quote.quote,
+      bodyWidth,
+      maxY - quoteTop,
+      84,
+      36,
+      1.4,
+      quoteFont,
+    );
     ctx.fillStyle = text;
-    ctx.font = `${q.size}px ${quoteCardFontStack(serif)}`;
+    ctx.font = `${q.size}px ${quoteFont}`;
     let y = quoteTop + q.size;
     for (const line of q.lines) {
       ctx.fillText(line, QUOTE_CARD_PADDING, y);
       y += q.size * 1.4;
     }
-    if (translation) {
-      // 译文锚在底栏上方：小一号、muted 色，和原文之间留呼吸感
-      const t = fitCanvasFontSize(ctx, translation, bodyWidth, 220, 46, 30, 1.6);
-      const lines = t.lines.slice(-Math.floor(220 / (t.size * 1.6)));
-      let ty = footerTop - 60 - (lines.length - 1) * t.size * 1.6;
+    if (tLines.length) {
+      let ty = y - q.size * 1.4 + 48 + tSize;
       ctx.fillStyle = sub;
-      ctx.font = `${t.size}px ${quoteCardFontStack(false)}`;
-      for (const line of lines) {
+      ctx.font = `${tSize}px ${quoteCardFontStack(false)}`;
+      for (const line of tLines) {
         ctx.fillText(line, QUOTE_CARD_PADDING, ty);
-        ty += t.size * 1.6;
+        ty += tSize * 1.6;
       }
     }
   }
