@@ -51,6 +51,127 @@ let currentNotesFilterVideoId = null;
 const TRANSLATION_MESSAGE_TIMEOUT_MS = 130_000;
 const TRANSLATION_BATCH_SIZE = 3;
 
+// ============================================================
+// 译文缓存持久化（一生只翻一次）
+// ============================================================
+// 两个内存缓存（interfaceTranslationCache：笔记/章节译文；
+// transcriptParagraphCache：转写句子译文）是唯一真源，
+// chrome.storage.local 只做全量镜像。此前译文跟着视频 digest 缓存走，
+// 会受「只留 20 个视频」的 LRU 和过期机制淘汰；改为全局独立存储后，
+// 译文不再被淘汰 —— 任何视频只翻译一次，之后重开/导出零额度。
+// 写盘失败静默降级：只是下次重开重新翻译，不影响当前会话。
+const TRANSLATION_CACHE_STORAGE_KEY = "ytd_translation_caches_v1";
+let translationCachesDirty = false;
+let translationCacheFlushTimer = null;
+
+function restoreTranslationCaches(data) {
+  const restore = (target, entries) => {
+    if (!Array.isArray(entries)) return;
+    for (const [key, value] of entries) {
+      if (
+        typeof key === "string" &&
+        typeof value === "string" &&
+        !target.has(key)
+      ) {
+        target.set(key, value);
+      }
+    }
+  };
+  restore(interfaceTranslationCache, data?.interface);
+  restore(transcriptParagraphCache, data?.paragraph);
+}
+
+/** 启动时把持久化的译文加载回内存；首次安装则从旧 digest 缓存里迁移。 */
+async function loadTranslationCachesFromStorage() {
+  try {
+    const stored = await chrome.storage.local.get(
+      TRANSLATION_CACHE_STORAGE_KEY,
+    );
+    const data = stored?.[TRANSLATION_CACHE_STORAGE_KEY];
+    if (data) {
+      restoreTranslationCaches(data);
+      return;
+    }
+    // 一次性迁移：旧版本把译文存在每个视频的 digest 缓存里，
+    // 全部合并进来，避免已翻译过的内容重新花一次额度。
+    const all = await chrome.storage.local.get(null);
+    const migrated = { interface: [], paragraph: [] };
+    const collect = (target, source) => {
+      if (source && typeof source === "object") {
+        for (const [key, value] of Object.entries(source)) {
+          if (typeof value === "string") target.push([key, value]);
+        }
+      }
+    };
+    for (const [key, value] of Object.entries(all)) {
+      if (!key.startsWith("digest_")) continue;
+      collect(migrated.interface, value?.interfaceCache);
+      collect(migrated.paragraph, value?.paragraphCache);
+    }
+    if (migrated.interface.length || migrated.paragraph.length) {
+      restoreTranslationCaches(migrated);
+      scheduleTranslationCachesFlush();
+      debugLog(
+        `[YouTube Digest] Migrated translations from digests: ` +
+          `${migrated.interface.length} interface, ${migrated.paragraph.length} paragraph`,
+      );
+    }
+  } catch (error) {
+    console.warn(
+      "[YouTube Digest] 译文缓存加载失败，本次会话仅用内存缓存:",
+      error,
+    );
+  }
+}
+
+function flushTranslationCachesNow() {
+  if (translationCacheFlushTimer) {
+    clearTimeout(translationCacheFlushTimer);
+    translationCacheFlushTimer = null;
+  }
+  if (!translationCachesDirty) return;
+  translationCachesDirty = false;
+  try {
+    chrome.storage.local.set(
+      {
+        [TRANSLATION_CACHE_STORAGE_KEY]: {
+          interface: Array.from(interfaceTranslationCache.entries()),
+          paragraph: Array.from(transcriptParagraphCache.entries()),
+        },
+      },
+      () => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          console.warn(
+            "[YouTube Digest] 译文缓存写盘失败（下次重开会重新翻译）:",
+            lastError.message,
+          );
+        }
+      },
+    );
+  } catch (error) {
+    console.warn("[YouTube Digest] 译文缓存写盘失败:", error);
+  }
+}
+
+/** 防抖批量落盘：翻译是逐批返回的，合并成一次写入。 */
+function scheduleTranslationCachesFlush() {
+  translationCachesDirty = true;
+  if (translationCacheFlushTimer) return;
+  translationCacheFlushTimer = setTimeout(flushTranslationCachesNow, 1500);
+}
+
+// 侧边栏页面关闭前把未落盘的译文立即写掉（测试沙箱里没有 window/chrome）
+if (
+  typeof window !== "undefined" &&
+  typeof window.addEventListener === "function"
+) {
+  window.addEventListener("pagehide", flushTranslationCachesNow);
+}
+if (typeof chrome !== "undefined" && chrome.storage?.local) {
+  loadTranslationCachesFromStorage();
+}
+
 // --- Transcript search state ---
 // Matches point to visible marks in the active transcript language mode.
 // Search navigation only scrolls the panel. It does not seek the video.
@@ -646,16 +767,7 @@ async function startDigest(videoId, videoUrl) {
     isAnalysisLoading = false;
 
     // Restore semantic-segment translations from persistent storage.
-    if (cached.paragraphCache) {
-      for (const [key, value] of Object.entries(cached.paragraphCache)) {
-        transcriptParagraphCache.set(key, value);
-      }
-    }
-    if (cached.interfaceCache) {
-      for (const [key, value] of Object.entries(cached.interfaceCache)) {
-        interfaceTranslationCache.set(key, value);
-      }
-    }
+    // 译文已改为全局持久化（loadTranslationCachesFromStorage），不再依赖 digest。
 
     if (currentVideoTitle || currentChannelName) {
       const videoInfo = document.getElementById("videoInfo");
@@ -852,6 +964,7 @@ async function translateInterfaceSegments(surface, segments, rerender) {
       aligned.forEach((item, index) => {
         if (item.text) {
           interfaceTranslationCache.set(batch[index].cacheKey, item.text);
+          scheduleTranslationCachesFlush();
         } else {
           interfaceTranslationFailures.add(batch[index].cacheKey);
         }
@@ -2067,19 +2180,8 @@ async function saveToCache(videoId) {
   if (!videoId || !currentTranscript) return;
 
   try {
-    // Persist semantic-segment translations for this video.
-    const paragraphCacheForVideo = {};
-    for (const [key, value] of transcriptParagraphCache.entries()) {
-      if (key.startsWith(`${videoId}:`)) {
-        paragraphCacheForVideo[key] = value;
-      }
-    }
-    const interfaceCacheForVideo = {};
-    for (const [key, value] of interfaceTranslationCache.entries()) {
-      if (key.startsWith(`${videoId}:`)) {
-        interfaceCacheForVideo[key] = value;
-      }
-    }
+    // 译文不再随 digest 持久化 —— 它们有独立的全局存储
+    // （TRANSLATION_CACHE_STORAGE_KEY），不受 digest 的 LRU / 过期影响。
 
     const cacheData = {
       analysis: currentAnalysis, // May be null if not yet analyzed
@@ -2089,8 +2191,6 @@ async function saveToCache(videoId) {
       transcriptLanguage: currentTranscriptLanguage,
       videoTitle: currentVideoTitle,
       channelName: currentChannelName,
-      paragraphCache: paragraphCacheForVideo,
-      interfaceCache: interfaceCacheForVideo,
       timestamp: Date.now(),
     };
 
@@ -3137,6 +3237,7 @@ function updateTranslatedRow(segment, index, alignedItem, generation) {
       transcriptTranslationCacheKey(segment),
       alignedItem.text,
     );
+    scheduleTranslationCachesFlush();
   }
 
   const copy = row.querySelector(".transcript-copy");
