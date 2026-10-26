@@ -2412,12 +2412,22 @@ async function exportObsidianMd() {
   // --- manual timestamped notes ---
   lines.push("## Notes");
   lines.push("");
-  notes.forEach((note) => {
+  notes.forEach((note, index) => {
     const ts = Math.floor(Number(note.timestampSeconds) || 0);
     const parts = noteToParts(note.text);
     lines.push(
       `- [${noteClock(ts)}](${noteWithTs(url, ts)}) ${parts.original || "(empty)"}`,
     );
+    // 双语：只从界面翻译缓存里取译文（双语/中文模式下渲染笔记时已翻译过），
+    // 缓存里没有就跳过 —— 导出本身永不触发 AI 调用、不花额度
+    const translated = getInterfaceTranslation(
+      "notes",
+      getNoteTranslationId(note, index),
+      note.text || "",
+    );
+    if (translated && translated !== parts.original) {
+      lines.push(`  - ${translated}`);
+    }
   });
   lines.push("");
 
