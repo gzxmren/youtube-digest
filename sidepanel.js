@@ -2598,6 +2598,11 @@ function renderTimelineHeatmap(force = false) {
       rows.push(`${noteClock(from)} – ${noteClock(to)} ${kindLabel}`.trim());
       const first = segment ? stripHtmlToText(segment.text) : "";
       if (first) rows.push(first);
+      // 译文：只取已翻译缓存（双语/中文模式下翻过的句子），绝不触发 AI
+      const translated = segment
+        ? transcriptParagraphCache.get(transcriptTranslationCacheKey(segment))
+        : null;
+      if (translated) rows.push(stripHtmlToText(translated));
     }
     if (rows.length === 0) {
       tip.style.display = "none";
