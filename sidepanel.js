@@ -1021,6 +1021,8 @@ function renderAnalysisResults(analysis) {
   ) {
     void translateOverviewContent();
   }
+
+  renderTimelineHeatmap();
 }
 
 /**
@@ -1142,6 +1144,8 @@ function renderTranscript() {
 
   // Reapply an active query after a language mode rerenders the transcript.
   refreshTranscriptSearch({ preserveIndex: false, scroll: false });
+
+  renderTimelineHeatmap();
 
   // Start tracking video playback for auto-scroll
   startPlaybackTracking();
@@ -2435,6 +2439,231 @@ function quoteCardTemplate() {
   );
 }
 
+// ============================================================
+// TIMELINE HEATMAP (#17) —— 转写顶部的时间带导航
+// 三层着色：底色（普通）/ keyMoments（关键点加深）/ 笔记（最深+圆点），
+// 章节边界做浮层（名字进悬停 tooltip，窄段不渲染文字），
+// 悬停限宽 tooltip 预览首句，点击 seekTo 并滚动转写。
+// 块粒度自适应侧边栏宽度（每桶 ≥8px），纯本地数据渲染，零 AI 消耗。
+// ============================================================
+
+let timelineRenderSignature = "";
+let timelineResizeObserver = null;
+let timelinePlayheadSeconds = 0;
+
+function timelineDuration() {
+  if (currentVideoDuration) return Number(currentVideoDuration);
+  const segments = getActiveTranscriptSegments();
+  return segments.length
+    ? Number(segments[segments.length - 1].start) + 60
+    : 0;
+}
+
+/** 找到时间点所在（或之前最近）的转写分段，取首句做 tooltip 预览。 */
+function timelineSegmentAt(seconds) {
+  const segments = getActiveTranscriptSegments();
+  if (!segments.length) return null;
+  let found = segments[0];
+  for (const segment of segments) {
+    if (Number(segment.start) <= seconds) found = segment;
+    else break;
+  }
+  return found;
+}
+
+function renderTimelineHeatmap(force = false) {
+  const host = document.getElementById("timelineHeatmap");
+  if (!host) return;
+  const duration = timelineDuration();
+  if (!duration || !currentTranscript?.length) {
+    host.style.display = "none";
+    return;
+  }
+  host.style.display = "block";
+
+  const width = host.clientWidth || 300;
+  const keyMoments = (currentAnalysis?.keyMoments || []).map(Number);
+  const notesForVideo = currentNotes || [];
+  const noteTimes = notesForVideo.map((n) => Number(n.timestampSeconds) || 0);
+  const chapters = currentAnalysis?.chapters || [];
+
+  const signature = [
+    duration,
+    width,
+    keyMoments.length,
+    noteTimes.length,
+    chapters.length,
+    currentVideoId,
+    currentTranscriptMode,
+  ].join("|");
+  if (!force && signature === timelineRenderSignature) return;
+  timelineRenderSignature = signature;
+
+  // 自适应分桶：每桶 ≥8px，≥12 桶且每桶 ≥10 秒，避免长视频桶过窄
+  const bucketCount = Math.max(
+    12,
+    Math.min(Math.floor(width / 8), Math.ceil(duration / 10)),
+  );
+  const bucketSeconds = duration / bucketCount;
+  const buckets = [];
+  for (let i = 0; i < bucketCount; i++) {
+    const from = i * bucketSeconds;
+    const to = from + bucketSeconds;
+    const km = keyMoments.filter((t) => t >= from && t < to).length;
+    const nt = noteTimes.filter((t) => t >= from && t < to).length;
+    buckets.push({ from, to, km, nt });
+  }
+
+  host.innerHTML = "";
+
+  // ---- 热力带 ----
+  const heat = document.createElement("div");
+  heat.className = "timeline-heat";
+  buckets.forEach((bucket) => {
+    const cell = document.createElement("div");
+    const level = bucket.nt > 0 ? 2 : bucket.km > 0 ? 1 : 0;
+    cell.className = `timeline-cell level-${level}`;
+    cell.dataset.from = bucket.from;
+    cell.dataset.to = bucket.to;
+    if (bucket.nt > 0) cell.classList.add("has-note");
+    heat.appendChild(cell);
+  });
+  host.appendChild(heat);
+
+  // ---- 章节浮层（只画边界分隔，名字进 tooltip） ----
+  if (chapters.length > 0) {
+    const layer = document.createElement("div");
+    layer.className = "timeline-chapters";
+    chapters.forEach((chapter, index) => {
+      const from = Number(chapter.timestampSeconds) || 0;
+      const to = Number(chapters[index + 1]?.timestampSeconds) || duration;
+      if (to <= from) return;
+      const segment = document.createElement("div");
+      segment.className = "timeline-chapter";
+      segment.style.left = `${(from / duration) * 100}%`;
+      segment.style.width = `${((to - from) / duration) * 100}%`;
+      segment.dataset.chapterTitle = chapter.title || "";
+      segment.dataset.chapterTime = noteClock(from);
+      layer.appendChild(segment);
+    });
+    host.appendChild(layer);
+  }
+
+  // ---- 笔记标记点 ----
+  const dots = document.createElement("div");
+  dots.className = "timeline-dots";
+  noteTimes.forEach((t) => {
+    if (t <= 0 || t >= duration) return;
+    const dot = document.createElement("div");
+    dot.className = "timeline-dot";
+    dot.style.left = `${(t / duration) * 100}%`;
+    dots.appendChild(dot);
+  });
+  host.appendChild(dots);
+
+  // ---- 播放位置指针 ----
+  const playhead = document.createElement("div");
+  playhead.className = "timeline-playhead";
+  playhead.id = "timelinePlayhead";
+  host.appendChild(playhead);
+
+  // ---- 悬停 tooltip（单个复用） ----
+  const tip = document.createElement("div");
+  tip.className = "timeline-tip";
+  tip.style.display = "none";
+  host.appendChild(tip);
+
+  // ---- 事件（on* 赋值：DOM 重建时自动覆盖，无重复绑定） ----
+  host.onmousemove = (event) => {
+    const cell = event.target.closest(".timeline-cell");
+    const chapter = event.target.closest(".timeline-chapter");
+    const rows = [];
+    if (chapter) {
+      rows.push(
+        `${chapter.dataset.chapterTime || ""} ${chapter.dataset.chapterTitle || ""}`.trim(),
+      );
+    }
+    if (cell) {
+      const from = Number(cell.dataset.from) || 0;
+      const to = Number(cell.dataset.to) || 0;
+      const segment = timelineSegmentAt(from + 1);
+      const kind =
+        cell.classList.contains("has-note")
+          ? "note"
+          : cell.classList.contains("level-1")
+            ? "key"
+            : "";
+      const kindLabel =
+        kind === "note" ? "· 有笔记" : kind === "key" ? "· 关键点" : "";
+      rows.push(`${noteClock(from)} – ${noteClock(to)} ${kindLabel}`.trim());
+      const first = segment ? stripHtmlToText(segment.text) : "";
+      if (first) rows.push(first);
+    }
+    if (rows.length === 0) {
+      tip.style.display = "none";
+      return;
+    }
+    tip.innerHTML = rows
+      .map((row, i) => `<div class="${i === 0 ? "tip-head" : ""}">${escapeHtml(row)}</div>`)
+      .join("");
+    tip.style.display = "block";
+    // 跟随鼠标但夹在容器内
+    const hostRect = host.getBoundingClientRect();
+    const x = Math.min(
+      Math.max(event.clientX - hostRect.left, 8),
+      hostRect.width - tip.offsetWidth - 8,
+    );
+    tip.style.left = `${x}px`;
+  };
+  host.onmouseleave = () => {
+    tip.style.display = "none";
+  };
+  host.onclick = (event) => {
+    const cell = event.target.closest(".timeline-cell");
+    if (!cell) return;
+    const from = Number(cell.dataset.from) || 0;
+    void seekTo(Math.round(from + 1));
+    // 立即把转写滚到目标处（tick 高亮随后跟上）
+    const seconds = from + 1;
+    const segments = getActiveTranscriptSegments();
+    let target = null;
+    for (const segment of segments) {
+      if (Number(segment.start) <= seconds) target = segment;
+      else break;
+    }
+    if (target?.id) {
+      document
+        .querySelector(
+          `#transcriptList .transcript-entry[data-segment-id="${CSS.escape(target.id)}"]`,
+        )
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  // ---- 侧边栏拖宽/变窄时自适应重渲染 ----
+  if (!timelineResizeObserver) {
+    timelineResizeObserver = new ResizeObserver(() => {
+      renderTimelineHeatmap(true);
+    });
+    timelineResizeObserver.observe(host);
+  }
+
+  updateTimelinePlayhead(null);
+}
+
+/** 播放指针同步。seconds 为 null 时按最后已知位置刷新（重渲染后不丢位）。 */
+function updateTimelinePlayhead(seconds) {
+  const playhead = document.getElementById("timelinePlayhead");
+  if (!playhead) return;
+  const duration = timelineDuration();
+  if (!duration) return;
+  const at =
+    typeof seconds === "number" ? seconds : timelinePlayheadSeconds;
+  timelinePlayheadSeconds = at;
+  playhead.style.display = "block";
+  playhead.style.left = `${Math.min(100, (at / duration) * 100)}%`;
+}
+
 /** 打开卡片预览弹窗：canvas 实时预览 + 模板横排切换 + 下载 PNG。 */
 function openQuoteCardModal(quote, index) {
   document.getElementById("quoteCardModal")?.remove();
@@ -2743,6 +2972,7 @@ async function loadNotes(videoId) {
       currentNotes = result.notes || [];
       currentNotesFilterVideoId = videoId;
       renderNotes(result.notes, videoId);
+      renderTimelineHeatmap();
     }
   } catch (error) {
     console.error("[YouTube Digest Panel] Load notes error:", error);
@@ -3295,6 +3525,7 @@ function scrollToActiveEntry() {
  * @param {number} currentSeconds - Current video playback time in seconds
  */
 function highlightActiveEntry(currentSeconds) {
+  updateTimelinePlayhead(currentSeconds);
   const transcriptList = document.getElementById("transcriptList");
   if (!transcriptList) return;
 
