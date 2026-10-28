@@ -462,6 +462,9 @@ function setupEventListeners() {
   document
     .getElementById("exportObsidianBtn")
     ?.addEventListener("click", exportObsidianMd);
+  document
+    .getElementById("autoClipsBtn")
+    ?.addEventListener("click", autoHighlightClips);
   document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
     button.addEventListener("click", () => {
       handleDisplayLanguageModeChange(button.dataset.transcriptMode);
@@ -3068,6 +3071,165 @@ async function saveClipListNatively(videoId, csv) {
   } catch (_error) {
     return false;
   }
+}
+
+// ============================================================
+// AUTO HIGHLIGHT CLIPS (#8) —— AI 自动标高光片段（草稿预览制）
+// ============================================================
+
+/**
+ * Asks the AI for 3-5 repostable 30-60s clips, shows them as a draft list
+ * (entries removable), and only writes clips.csv after the user confirms —
+ * a hand-tuned list is never clobbered silently. One AI call per click.
+ */
+async function autoHighlightClips() {
+  const btn = document.getElementById("autoClipsBtn");
+  const flash = (text) => {
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => {
+      btn.textContent = original;
+    }, 2000);
+  };
+
+  const videoId = currentNotesFilterVideoId || currentVideoId;
+  if (!videoId || !currentTranscriptTimestamped) {
+    flash("Open a video first");
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Thinking…";
+  }
+  let result;
+  try {
+    result = await chrome.runtime.sendMessage({
+      action: "highlightClips",
+      transcriptText: currentTranscriptTimestamped,
+      videoTitle: currentVideoTitle,
+      channelName: currentChannelName,
+      videoDuration: currentVideoDuration,
+    });
+  } catch (error) {
+    result = { success: false, error: error.message };
+  }
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = "Auto clips";
+  }
+
+  if (!result?.success || !result.clips?.length) {
+    flash(result?.error === "NO_AI_KEY" ? "No AI key" : "Failed");
+    if (result?.message) console.warn("[YouTube Digest] Auto clips:", result.message);
+    return;
+  }
+
+  showClipsDraft(videoId, result.clips, flash);
+}
+
+/** Renders the draft clip list with per-entry remove and a write button. */
+function showClipsDraft(videoId, clips, flash) {
+  document.getElementById("clipsDraft")?.remove();
+
+  const draft = document.createElement("div");
+  draft.id = "clipsDraft";
+  draft.className = "clips-draft";
+
+  const title = document.createElement("div");
+  title.className = "clips-draft-title";
+  title.textContent = `AI draft — ${clips.length} clips`;
+  draft.appendChild(title);
+
+  const list = document.createElement("div");
+  list.className = "clips-draft-list";
+  const keep = new Set(clips.map((_, index) => index));
+
+  const renderRows = () => {
+    list.innerHTML = "";
+    clips.forEach((clip, index) => {
+      if (!keep.has(index)) return;
+      const row = document.createElement("div");
+      row.className = "clips-draft-row";
+      const clock = `${noteClock(clip.start)}–${noteClock(clip.end)}`;
+      row.innerHTML = `
+        <span class="clips-draft-time">${clock}</span>
+        <span class="clips-draft-body">
+          <b>${escapeHtml(clip.title)}</b>
+          <span>${escapeHtml(clip.reason || "")}</span>
+        </span>
+        <button class="clips-draft-remove" type="button" title="Remove this clip">&times;</button>
+      `;
+      row
+        .querySelector(".clips-draft-remove")
+        .addEventListener("click", () => {
+          keep.delete(index);
+          if (!keep.size) {
+            draft.remove();
+            flash("Discarded");
+            return;
+          }
+          renderRows();
+        });
+      list.appendChild(row);
+    });
+  };
+  renderRows();
+  draft.appendChild(list);
+
+  const actions = document.createElement("div");
+  actions.className = "clips-draft-actions";
+
+  const writeBtn = document.createElement("button");
+  writeBtn.type = "button";
+  writeBtn.className = "clips-draft-write";
+  writeBtn.textContent = "Write to clips.csv";
+  writeBtn.addEventListener("click", async () => {
+    const rows = ["start,end,title,reason,summary"];
+    clips.forEach((clip, index) => {
+      if (!keep.has(index)) return;
+      rows.push(
+        [
+          clip.start,
+          clip.end,
+          csvCell(clip.title),
+          csvCell(clip.reason || ""),
+          "",
+        ].join(","),
+      );
+    });
+    writeBtn.disabled = true;
+    writeBtn.textContent = "Writing…";
+    const saved = await saveClipListNatively(videoId, rows.join("\n"));
+    if (saved) {
+      draft.remove();
+      flash("Saved");
+    } else {
+      // 兜底：浏览器下载，跑一次 download.sh 会自动归位
+      downloadTextFile(
+        rows.join("\n"),
+        `clips-${videoId}.csv`,
+        "text/csv;charset=utf-8",
+      );
+      draft.remove();
+      flash("Exported");
+    }
+  });
+
+  const discardBtn = document.createElement("button");
+  discardBtn.type = "button";
+  discardBtn.className = "clips-draft-discard";
+  discardBtn.textContent = "Discard";
+  discardBtn.addEventListener("click", () => {
+    draft.remove();
+  });
+
+  actions.appendChild(writeBtn);
+  actions.appendChild(discardBtn);
+  draft.appendChild(actions);
+
+  document.getElementById("notesIntro")?.after(draft);
 }
 
 // ============================================================

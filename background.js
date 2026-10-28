@@ -423,6 +423,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === "highlightClips") {
+    // AI picks 3-5 repostable 30-60s clips; returned as a draft for the
+    // side panel to preview before anything is written to clips.csv.
+    handleHighlightClips(
+      message.transcriptText,
+      message.videoTitle,
+      message.channelName,
+      message.videoDuration,
+    )
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (message.action === "saveNote") {
     // Save a note at the current timestamp, or save exact selected transcript
     // text when the side panel supplies it.
@@ -1103,6 +1117,126 @@ function parseLooseJson(text) {
  * @param {string} channelName - The channel name
  * @returns {Object} - { success, analysis } or { success: false, error }
  */
+/**
+ * AI picks 3-5 repostable 30-60s clips from the timestamped transcript.
+ * Returns a DRAFT clip list — the side panel previews it and only writes
+ * clips.csv after the user confirms, so hand-tuned lists are never clobbered.
+ */
+async function handleHighlightClips(
+  transcriptText,
+  videoTitle,
+  channelName,
+  videoDuration,
+) {
+  try {
+    const settings = await getSettings();
+    if (!settings.aiApiKey) {
+      return {
+        success: false,
+        error: "NO_AI_KEY",
+        message: "DeepSeek API key not configured. Open YouTube Digest Settings.",
+      };
+    }
+
+    // Same duration logic as analysis: last [M:SS] stamp beats metadata.
+    let lastTranscriptSeconds = 0;
+    const stampMatches = transcriptText.match(/\[(\d+):(\d{2})\]/g) || [];
+    if (stampMatches.length) {
+      const last =
+        stampMatches[stampMatches.length - 1].match(/\[(\d+):(\d{2})\]/);
+      lastTranscriptSeconds = parseInt(last[1]) * 60 + parseInt(last[2]);
+    }
+    const effectiveSeconds = Math.max(
+      Math.floor(videoDuration || 0),
+      lastTranscriptSeconds,
+    );
+    const durationFormatted = `${Math.floor(effectiveSeconds / 60)}:${String(
+      Math.floor(effectiveSeconds % 60),
+    ).padStart(2, "0")}`;
+
+    const promptVariables = {
+      videoTitle,
+      channelName,
+      durationFormatted,
+      maxTimestampSeconds: effectiveSeconds,
+      transcriptText,
+    };
+    const systemPrompt = await loadPromptSection(
+      "highlight-clips.md",
+      "System prompt",
+      promptVariables,
+    );
+    const userPrompt = await loadPromptSection(
+      "highlight-clips.md",
+      "User prompt",
+      promptVariables,
+    );
+
+    const { text: responseText } = await requestAiCompletion({
+      maxTokens: 2048,
+      responseFormat: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+
+    const parsed = parseLooseJson(responseText);
+    const rawClips = Array.isArray(parsed?.clips) ? parsed.clips : [];
+
+    // Treat the model output as untrusted: rebuild a clean, bounded list.
+    const clips = rawClips
+      .map((clip) => ({
+        start: Math.floor(Number(clip?.start) || 0),
+        end: Math.floor(Number(clip?.end) || 0),
+        title: String(clip?.title || "")
+          .replace(/[/\\:*?"<>|]/g, "_")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 24),
+        reason: String(clip?.reason || "").trim().slice(0, 200),
+      }))
+      .filter(
+        (clip) =>
+          clip.end > clip.start &&
+          clip.end - clip.start >= 20 &&
+          clip.end - clip.start <= 90 &&
+          clip.start < effectiveSeconds &&
+          clip.title,
+      )
+      .slice(0, 5);
+
+    if (!clips.length) {
+      return {
+        success: false,
+        error: "NO_CLIPS",
+        message: "AI did not return any valid clips. Try again.",
+      };
+    }
+    return { success: true, clips };
+  } catch (error) {
+    console.error("Highlight clips error:", error);
+    if (error.status === 401) {
+      return {
+        success: false,
+        error: "INVALID_AI_KEY",
+        message: "DeepSeek rejected the API key.",
+      };
+    }
+    if (error.status === 429) {
+      return {
+        success: false,
+        error: "RATE_LIMITED",
+        message: "DeepSeek rate-limited this request. Try again shortly.",
+      };
+    }
+    return {
+      success: false,
+      error: error.message || "Failed to generate highlight clips",
+    };
+  }
+}
+
 async function handleAnalyzeTranscript(
   transcriptText,
   videoTitle,

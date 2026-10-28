@@ -1465,6 +1465,96 @@ body {
   overflow: hidden;
 }
 
+/* ---- AI clip draft preview (#8) ---- */
+.clips-draft {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-raised, #faf7f4);
+}
+
+.clips-draft-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.clips-draft-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.clips-draft-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.clips-draft-time {
+  flex: 0 0 auto;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.clips-draft-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.clips-draft-body span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.clips-draft-remove {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+}
+
+.clips-draft-remove:hover {
+  color: var(--text);
+}
+
+.clips-draft-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.clips-draft-actions button {
+  flex: 1;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  font-family: var(--font-body, sans-serif);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.clips-draft-write {
+  background: var(--accent, #333);
+  color: #fff;
+}
+
+.clips-draft-discard {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border) !important;
+}
+
 .explain-modal-overlay {  position: fixed;
   inset: 0;
   background: rgba(46, 42, 36, 0.55);
